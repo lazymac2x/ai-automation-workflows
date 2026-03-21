@@ -1,0 +1,193 @@
+{
+  "name": "RSS Feed to Social Media Auto-Post",
+  "nodes": [
+    {
+      "parameters": {
+        "url": "={{ $env.RSS_FEED_URL || 'https://techcrunch.com/feed/' }}",
+        "options": {}
+      },
+      "id": "rss-trigger",
+      "name": "RSS Feed Trigger",
+      "type": "n8n-nodes-base.rssFeedReadTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "pollTimes": {
+        "item": [
+          {
+            "mode": "everyMinute",
+            "minute": 15
+          }
+        ]
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  const title = d.title || '';\n  const link = d.link || d.url || '';\n  const content = d.content || d.description || d['content:encoded'] || '';\n  \n  // Strip HTML tags for clean text\n  const cleanContent = content.replace(/<[^>]*>/g, '').trim();\n  // Truncate to ~1500 chars for AI processing\n  const truncated = cleanContent.substring(0, 1500);\n  \n  results.push({\n    json: {\n      title,\n      link,\n      raw_content: truncated,\n      pub_date: d.pubDate || d.isoDate || new Date().toISOString(),\n      author: d.creator || d.author || 'Unknown'\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "extract-content",
+      "name": "Extract & Clean Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a social media content specialist. Create engaging social media posts from articles. Be concise, use relevant hashtags, and make the content shareable. Output JSON with keys: tweet (max 260 chars + link space), linkedin_post (max 700 chars), hashtags (array of 3-5 tags)."
+            },
+            {
+              "role": "user",
+              "content": "=Create social media posts for this article:\n\nTitle: {{ $json.title }}\n\nContent: {{ $json.raw_content }}\n\nURL: {{ $json.link }}\n\nOutput as JSON with: tweet, linkedin_post, hashtags"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.7,
+          "maxTokens": 500,
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "ai-summarize",
+      "name": "AI Generate Social Posts",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.4,
+      "position": [680, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  let aiResponse;\n  \n  try {\n    const content = d.message?.content || d.choices?.[0]?.message?.content || d.text || '{}';\n    aiResponse = JSON.parse(content);\n  } catch (e) {\n    aiResponse = {\n      tweet: d.title?.substring(0, 240) + '...',\n      linkedin_post: d.title || 'Check out this article',\n      hashtags: ['tech', 'news']\n    };\n  }\n  \n  const hashtags = (aiResponse.hashtags || []).map(t => t.startsWith('#') ? t : `#${t}`).join(' ');\n  const tweetText = `${aiResponse.tweet}\\n\\n${d.link || ''}\\n\\n${hashtags}`.trim();\n  const linkedinText = `${aiResponse.linkedin_post}\\n\\n${hashtags}\\n\\n${d.link || ''}`;\n  \n  results.push({\n    json: {\n      ...d,\n      tweet_text: tweetText,\n      linkedin_text: linkedinText,\n      hashtags: aiResponse.hashtags || [],\n      ai_summary: aiResponse\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-ai-response",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "text": "={{ $json.tweet_text }}",
+        "additionalFields": {}
+      },
+      "id": "post-twitter",
+      "name": "Post to Twitter/X",
+      "type": "n8n-nodes-base.twitter",
+      "typeVersion": 2,
+      "position": [1140, 180],
+      "credentials": {
+        "twitterOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Twitter/X OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_CHANNEL || '#social-media-log' }}",
+        "text": "=:newspaper: *New Auto-Post Published*\n\n*Title:* {{ $json.title }}\n*Link:* {{ $json.link }}\n\n*Tweet:*\n{{ $json.tweet_text }}\n\n*Status:* Posted at {{ new Date().toISOString() }}",
+        "otherOptions": {}
+      },
+      "id": "notify-slack",
+      "name": "Notify Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1140, 420],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Slack OAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "RSS Feed Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract & Clean Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Clean Content": {
+      "main": [
+        [
+          {
+            "node": "AI Generate Social Posts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Generate Social Posts": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Response": {
+      "main": [
+        [
+          {
+            "node": "Post to Twitter/X",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "social-media",
+      "id": "4"
+    },
+    {
+      "name": "rss",
+      "id": "5"
+    },
+    {
+      "name": "ai",
+      "id": "6"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-21T00:00:00.000Z",
+  "versionId": "1.0.0"
+}

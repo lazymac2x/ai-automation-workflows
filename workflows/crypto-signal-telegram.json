@@ -1,0 +1,198 @@
+{
+  "name": "Crypto Signal to Telegram Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 4
+            }
+          ]
+        }
+      },
+      "id": "cron-trigger",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.CRYPTO_SIGNAL_API_URL || 'https://your-api.example.com' }}/api/signals",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "fetch-signals",
+      "name": "Fetch Crypto Signals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_ME",
+          "name": "Crypto Signal API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-buy",
+              "leftValue": "={{ $json.signal }}",
+              "rightValue": "BUY",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "condition-strong-buy",
+              "leftValue": "={{ $json.signal }}",
+              "rightValue": "STRONG_BUY",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "filter-signals",
+      "name": "Filter BUY Signals",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  const emoji = d.signal === 'STRONG_BUY' ? '\\ud83d\\udfe2\\ud83d\\udfe2' : '\\ud83d\\udfe2';\n  const confidence = d.confidence ? `${(d.confidence * 100).toFixed(1)}%` : 'N/A';\n  \n  const message = [\n    `${emoji} *${d.signal}* Signal`,\n    ``,\n    `\\ud83d\\udcb0 *Pair:* ${d.symbol || d.pair || 'N/A'}`,\n    `\\ud83d\\udcca *Price:* $${d.price || 'N/A'}`,\n    `\\ud83c\\udfaf *Confidence:* ${confidence}`,\n    `\\ud83d\\udcc8 *Timeframe:* ${d.timeframe || '4h'}`,\n    ``,\n    `\\ud83d\\udcdd *Indicators:*`,\n    d.rsi ? `  RSI: ${d.rsi}` : null,\n    d.macd_signal ? `  MACD: ${d.macd_signal}` : null,\n    d.volume_change ? `  Volume: ${d.volume_change}` : null,\n    ``,\n    `\\u23f0 ${new Date().toISOString()}`\n  ].filter(Boolean).join('\\n');\n  \n  results.push({ json: { ...d, formatted_message: message } });\n}\n\nreturn results;"
+      },
+      "id": "format-message",
+      "name": "Format Alert Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID || 'REPLACE_WITH_CHAT_ID' }}",
+        "text": "={{ $json.formatted_message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "disable_web_page_preview": true
+        }
+      },
+      "id": "send-telegram",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1120, 200],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const timestamp = new Date().toISOString();\nconst signalCount = $input.all().length;\nconsole.log(`[${timestamp}] No actionable signals found. Total checked: ${signalCount}`);\nreturn [{ json: { status: 'no_signals', timestamp, count: signalCount } }];"
+      },
+      "id": "log-no-signal",
+      "name": "Log No Signals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 420]
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch Crypto Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Crypto Signals": {
+      "main": [
+        [
+          {
+            "node": "Filter BUY Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter BUY Signals": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Signals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Message": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "crypto",
+      "id": "1"
+    },
+    {
+      "name": "telegram",
+      "id": "2"
+    },
+    {
+      "name": "signals",
+      "id": "3"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-21T00:00:00.000Z",
+  "versionId": "1.0.0"
+}

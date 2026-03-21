@@ -1,0 +1,256 @@
+{
+  "name": "Website Change Monitor & Alert",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      },
+      "id": "cron-hourly",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.MONITOR_URL || 'https://example.com/pricing' }}",
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "fullResponse": true
+            }
+          }
+        }
+      },
+      "id": "fetch-page",
+      "name": "Fetch Target Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const crypto = require('crypto');\n\nconst items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const html = item.json.body || item.json.data || '';\n  \n  // Extract meaningful text content (strip HTML tags, scripts, styles)\n  const cleanText = html\n    .replace(/<script[^>]*>[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<style[^>]*>[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n  \n  // Generate content hash\n  const currentHash = crypto.createHash('md5').update(cleanText).digest('hex');\n  \n  // Get stored hash from static data\n  const staticData = $getWorkflowStaticData('global');\n  const previousHash = staticData.lastHash || null;\n  const previousTimestamp = staticData.lastChecked || null;\n  \n  const hasChanged = previousHash !== null && previousHash !== currentHash;\n  const isFirstRun = previousHash === null;\n  \n  // Store current state\n  staticData.lastHash = currentHash;\n  staticData.lastChecked = new Date().toISOString();\n  staticData.lastContent = cleanText.substring(0, 5000); // Store truncated for diff\n  \n  results.push({\n    json: {\n      url: item.json.url || $env.MONITOR_URL || 'https://example.com/pricing',\n      current_hash: currentHash,\n      previous_hash: previousHash,\n      has_changed: hasChanged,\n      is_first_run: isFirstRun,\n      checked_at: new Date().toISOString(),\n      previous_check: previousTimestamp,\n      content_preview: cleanText.substring(0, 500),\n      status_code: item.json.statusCode || 200\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "compare-content",
+      "name": "Compare with Previous",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "check-changed",
+              "leftValue": "={{ $json.has_changed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-changed",
+      "name": "Has Content Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "functionCode": "const d = $input.first().json;\nconst url = d.url;\nconst timestamp = d.checked_at;\nconst preview = d.content_preview || 'N/A';\n\nconst telegramMsg = [\n  '\\ud83d\\udea8 *Website Change Detected!*',\n  '',\n  `\\ud83c\\udf10 *URL:* ${url}`,\n  `\\u23f0 *Detected:* ${timestamp}`,\n  `\\ud83d\\udd0d *Previous Check:* ${d.previous_check || 'N/A'}`,\n  '',\n  '*Content Preview:*',\n  `\\`\\`\\`${preview.substring(0, 300)}\\`\\`\\``,\n  '',\n  '_Check the website for full details._'\n].join('\\n');\n\nconst slackMsg = {\n  text: `:rotating_light: *Website Change Detected*\\n\\n*URL:* ${url}\\n*Time:* ${timestamp}\\n*Previous Hash:* \\`${d.previous_hash}\\`\\n*New Hash:* \\`${d.current_hash}\\`\\n\\n*Preview:*\\n>>> ${preview.substring(0, 500)}`\n};\n\nconst emailSubject = `[Alert] Website Changed: ${url}`;\nconst emailBody = `A change was detected on the monitored website.\\n\\nURL: ${url}\\nDetected: ${timestamp}\\nPrevious Check: ${d.previous_check || 'First run'}\\n\\nContent Preview:\\n${preview}\\n\\n---\\nAutomated by n8n Website Monitor`;\n\nreturn [{\n  json: {\n    ...d,\n    telegram_message: telegramMsg,\n    slack_message: slackMsg.text,\n    email_subject: emailSubject,\n    email_body: emailBody\n  }\n}];"
+      },
+      "id": "format-alerts",
+      "name": "Format Alert Messages",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 200]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $env.TELEGRAM_CHAT_ID || 'REPLACE_WITH_CHAT_ID' }}",
+        "text": "={{ $json.telegram_message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "alert-telegram",
+      "name": "Alert via Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1360, 80],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE_ME",
+          "name": "Telegram Bot"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "channel": "={{ $env.SLACK_CHANNEL || '#monitoring' }}",
+        "text": "={{ $json.slack_message }}",
+        "otherOptions": {}
+      },
+      "id": "alert-slack",
+      "name": "Alert via Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [1360, 240],
+      "credentials": {
+        "slackOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Slack OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.FROM_EMAIL || 'monitor@yourdomain.com' }}",
+        "toEmail": "={{ $env.ALERT_EMAIL || 'you@yourdomain.com' }}",
+        "subject": "={{ $json.email_subject }}",
+        "text": "={{ $json.email_body }}",
+        "options": {}
+      },
+      "id": "alert-email",
+      "name": "Alert via Email",
+      "type": "n8n-nodes-base.sendEmail",
+      "typeVersion": 2.1,
+      "position": [1360, 400],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_ME",
+          "name": "SMTP Email"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "console.log(`[${new Date().toISOString()}] No change detected. Hash: ${$input.first().json.current_hash}`);\nreturn $input.all();"
+      },
+      "id": "log-no-change",
+      "name": "Log No Change",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1120, 420]
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Fetch Target Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Target Page": {
+      "main": [
+        [
+          {
+            "node": "Compare with Previous",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare with Previous": {
+      "main": [
+        [
+          {
+            "node": "Has Content Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Content Changed?": {
+      "main": [
+        [
+          {
+            "node": "Format Alert Messages",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log No Change",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Alert Messages": {
+      "main": [
+        [
+          {
+            "node": "Alert via Telegram",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert via Slack",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert via Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": {
+    "global": {
+      "lastHash": null,
+      "lastChecked": null,
+      "lastContent": null
+    }
+  },
+  "tags": [
+    {
+      "name": "monitoring",
+      "id": "9"
+    },
+    {
+      "name": "alerts",
+      "id": "10"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-21T00:00:00.000Z",
+  "versionId": "1.0.0"
+}

@@ -1,0 +1,369 @@
+{
+  "name": "AI Email Auto-Responder",
+  "nodes": [
+    {
+      "parameters": {
+        "mailbox": "INBOX",
+        "options": {
+          "customEmailConfig": "=[\"UNSEEN\"]"
+        }
+      },
+      "id": "email-trigger",
+      "name": "New Email Trigger",
+      "type": "n8n-nodes-base.imapEmail",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "credentials": {
+        "imap": {
+          "id": "REPLACE_ME",
+          "name": "IMAP Email Account"
+        }
+      },
+      "pollTimes": {
+        "item": [
+          {
+            "mode": "everyMinute",
+            "minute": 2
+          }
+        ]
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  const subject = d.subject || '';\n  const from = d.from?.text || d.from || '';\n  const body = (d.text || d.html || '').replace(/<[^>]*>/g, '').trim();\n  const truncatedBody = body.substring(0, 2000);\n  \n  results.push({\n    json: {\n      message_id: d.messageId || d.id || '',\n      from_address: from,\n      subject: subject,\n      body: truncatedBody,\n      date: d.date || new Date().toISOString(),\n      has_attachments: (d.attachments || []).length > 0\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "extract-email",
+      "name": "Extract Email Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are an email classifier. Classify the email into exactly one category. Output JSON with: category (one of: inquiry, complaint, support, spam, newsletter, personal, urgent), confidence (0-1), summary (one sentence), sentiment (positive, neutral, negative), requires_human (boolean - true if complex/sensitive)."
+            },
+            {
+              "role": "user",
+              "content": "=Classify this email:\n\nFrom: {{ $json.from_address }}\nSubject: {{ $json.subject }}\n\nBody:\n{{ $json.body }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 300,
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "classify-email",
+      "name": "AI Classify Email",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.4,
+      "position": [680, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const d = item.json;\n  let classification;\n  \n  try {\n    const content = d.message?.content || d.choices?.[0]?.message?.content || '{}';\n    classification = JSON.parse(content);\n  } catch (e) {\n    classification = { category: 'inquiry', confidence: 0.5, summary: 'Could not classify', sentiment: 'neutral', requires_human: true };\n  }\n  \n  // Merge original email data with classification\n  results.push({\n    json: {\n      ...item.json,\n      from_address: $('Extract Email Data').first().json.from_address,\n      subject: $('Extract Email Data').first().json.subject,\n      body: $('Extract Email Data').first().json.body,\n      message_id: $('Extract Email Data').first().json.message_id,\n      date: $('Extract Email Data').first().json.date,\n      classification\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-classification",
+      "name": "Parse Classification",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "not-spam",
+              "leftValue": "={{ $json.classification.category }}",
+              "rightValue": "spam",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "not-newsletter",
+              "leftValue": "={{ $json.classification.category }}",
+              "rightValue": "newsletter",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "filter-spam",
+      "name": "Filter Spam & Newsletters",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-4o"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a professional email assistant. Draft a helpful, polite, and concise email response. Match the tone of the original email. If the email is a complaint, be empathetic and solution-oriented. If it's an inquiry, be informative. Keep responses under 200 words. Output JSON with: subject (reply subject line), body (the response text), tone (formal/casual/empathetic)."
+            },
+            {
+              "role": "user",
+              "content": "=Draft a response to this email:\n\nCategory: {{ $json.classification.category }}\nSentiment: {{ $json.classification.sentiment }}\nFrom: {{ $json.from_address }}\nSubject: {{ $json.subject }}\n\nOriginal Email:\n{{ $json.body }}\n\nOutput as JSON with: subject, body, tone"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.6,
+          "maxTokens": 600,
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "draft-response",
+      "name": "AI Draft Response",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.4,
+      "position": [1340, 200],
+      "credentials": {
+        "openAiApi": {
+          "id": "REPLACE_ME",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  let response;\n  try {\n    const content = item.json.message?.content || item.json.choices?.[0]?.message?.content || '{}';\n    response = JSON.parse(content);\n  } catch (e) {\n    response = { subject: 'Re: ' + ($('Parse Classification').first().json.subject || ''), body: 'Thank you for your email. We will get back to you shortly.', tone: 'formal' };\n  }\n  \n  const prevData = $('Parse Classification').first().json;\n  \n  results.push({\n    json: {\n      ...prevData,\n      response_subject: response.subject || ('Re: ' + prevData.subject),\n      response_body: response.body,\n      response_tone: response.tone || 'formal'\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "parse-response",
+      "name": "Parse Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.FROM_EMAIL || 'noreply@yourdomain.com' }}",
+        "toEmail": "={{ $json.from_address }}",
+        "subject": "={{ $json.response_subject }}",
+        "text": "={{ $json.response_body }}",
+        "options": {}
+      },
+      "id": "send-reply",
+      "name": "Send Email Reply",
+      "type": "n8n-nodes-base.sendEmail",
+      "typeVersion": 2.1,
+      "position": [1780, 200],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_ME",
+          "name": "SMTP Email"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "url",
+          "value": "={{ $env.GOOGLE_SHEET_URL || 'https://docs.google.com/spreadsheets/d/REPLACE_ME' }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "list",
+          "value": "Sheet1"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.date }}",
+            "From": "={{ $json.from_address }}",
+            "Subject": "={{ $json.subject }}",
+            "Category": "={{ $json.classification.category }}",
+            "Sentiment": "={{ $json.classification.sentiment }}",
+            "Confidence": "={{ $json.classification.confidence }}",
+            "Requires Human": "={{ $json.classification.requires_human }}",
+            "Response Sent": "=Yes",
+            "Response Tone": "={{ $json.response_tone }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "log-sheets",
+      "name": "Log to Google Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [2000, 200],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_ME",
+          "name": "Google Sheets OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "// Log filtered spam/newsletter for auditing\nconst d = $input.first().json;\nconsole.log(`[FILTERED] Category: ${d.classification?.category}, From: ${d.from_address}, Subject: ${d.subject}`);\nreturn [{ json: { status: 'filtered', category: d.classification?.category, from: d.from_address } }];"
+      },
+      "id": "log-filtered",
+      "name": "Log Filtered Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
+    }
+  ],
+  "connections": {
+    "New Email Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Email Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Email Data": {
+      "main": [
+        [
+          {
+            "node": "AI Classify Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Classify Email": {
+      "main": [
+        [
+          {
+            "node": "Parse Classification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Classification": {
+      "main": [
+        [
+          {
+            "node": "Filter Spam & Newsletters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Spam & Newsletters": {
+      "main": [
+        [
+          {
+            "node": "AI Draft Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Filtered Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Draft Response": {
+      "main": [
+        [
+          {
+            "node": "Parse Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Response": {
+      "main": [
+        [
+          {
+            "node": "Send Email Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email Reply": {
+      "main": [
+        [
+          {
+            "node": "Log to Google Sheets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "email",
+      "id": "7"
+    },
+    {
+      "name": "ai",
+      "id": "6"
+    },
+    {
+      "name": "auto-responder",
+      "id": "8"
+    }
+  ],
+  "triggerCount": 1,
+  "updatedAt": "2026-03-21T00:00:00.000Z",
+  "versionId": "1.0.0"
+}

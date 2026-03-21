@@ -1,0 +1,35 @@
+{
+  "name": "ai-automation-workflows",
+  "version": "1.0.0",
+  "description": "5 production-ready n8n workflow templates for AI-powered automation. Includes crypto signals, RSS-to-social, AI email responder, website monitoring, and daily reporting.",
+  "author": "lazymac2x",
+  "license": "MIT",
+  "keywords": [
+    "n8n",
+    "workflow",
+    "automation",
+    "ai",
+    "openai",
+    "telegram",
+    "crypto",
+    "email",
+    "monitoring",
+    "reporting"
+  ],
+  "homepage": "https://github.com/lazymac2x/ai-automation-workflows",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lazymac2x/ai-automation-workflows.git"
+  },
+  "pricing": {
+    "gumroad": "$29.99",
+    "currency": "USD"
+  },
+  "workflows": [
+    "workflows/crypto-signal-telegram.json",
+    "workflows/rss-to-social.json",
+    "workflows/email-ai-responder.json",
+    "workflows/web-monitor-alert.json",
+    "workflows/daily-report-generator.json"
+  ]
+}
