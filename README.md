@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" width="120" alt="logo"></p>
+
 # AI Automation Workflows for n8n
 
 **5 production-ready n8n workflow templates that save you 20+ hours of setup time.**
